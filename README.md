@@ -54,7 +54,7 @@ pip install -r requirements.txt
 
 #### Example usage
 
-> "Connect to [hot] as [user] using my key at ~/.ssh/[file], then show me disk usage."
+> "Connect to [host] as [user] using my key at ~/.ssh/[file], then show me disk usage."
 
 Claude will call `ssh_connect` → `ssh_exec df -h` → return the output.
 
