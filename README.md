@@ -13,12 +13,15 @@ Gives Claude the ability to open persistent SSH connections to remote servers an
 | Tool | Description |
 |------|-------------|
 | `ssh_connect` | Open a persistent SSH connection (password or private key). Returns a `conn_id` used by all other tools. |
-| `ssh_exec` | Execute a shell command on an open connection. Returns stdout, stderr, and exit code. |
+| `ssh_exec` | Execute a shell command on an open connection. Returns stdout, stderr, and exit code. Each command runs in an isolated channel (no state persistence). |
 | `ssh_exec_script` | Upload and run an inline shell script remotely. The temp file is deleted after execution. |
+| `ssh_shell_open` | Open a persistent interactive shell with PTY. Maintains state (working directory, environment variables) across commands. |
+| `ssh_shell_exec` | Send a command to a persistent shell. State persists between calls (cd, export, etc.). Returns output and exit code. |
+| `ssh_shell_close` | Close a persistent shell session. |
 | `ssh_upload_file` | Upload a local file to the remote server via SFTP. |
 | `ssh_download_file` | Download a file from the remote server via SFTP. |
 | `ssh_list_connections` | List all currently open connections and their status. |
-| `ssh_disconnect` | Close a specific connection. |
+| `ssh_disconnect` | Close a specific connection (and any associated shells). |
 
 #### Authentication
 

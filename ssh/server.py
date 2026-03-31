@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any
 
@@ -24,6 +25,11 @@ logger = logging.getLogger("mcp-ssh")
 # --------------------------------------------------------------------------- #
 
 _connections: dict[str, paramiko.SSHClient] = {}
+_shells: dict[str, paramiko.Channel] = {}
+_shell_to_conn: dict[str, str] = {}  # shell_id -> conn_id
+
+# Marker used to detect end of command output in interactive shells
+_SHELL_MARKER = "__MCP_END_{}_{}__"
 
 
 def _get_connection(conn_id: str) -> paramiko.SSHClient:
@@ -202,6 +208,73 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["conn_id"],
             },
         ),
+        types.Tool(
+            name="ssh_shell_open",
+            description=(
+                "Open a persistent interactive shell on an SSH connection. "
+                "The shell maintains state (working directory, environment variables) "
+                "across commands and allocates a PTY for interactive programs. "
+                "Use ssh_shell_exec to send commands to this shell."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "conn_id": {"type": "string", "description": "ID of the open connection."},
+                    "shell_id": {
+                        "type": "string",
+                        "description": "Identifier for this shell session (default: same as conn_id).",
+                    },
+                    "term": {
+                        "type": "string",
+                        "description": "Terminal type (default: xterm).",
+                        "default": "xterm",
+                    },
+                    "cols": {
+                        "type": "integer",
+                        "description": "Terminal width in columns (default: 200).",
+                        "default": 200,
+                    },
+                    "rows": {
+                        "type": "integer",
+                        "description": "Terminal height in rows (default: 50).",
+                        "default": 50,
+                    },
+                },
+                "required": ["conn_id"],
+            },
+        ),
+        types.Tool(
+            name="ssh_shell_exec",
+            description=(
+                "Send a command to a persistent interactive shell and return the output. "
+                "The shell preserves state between commands (cd, export, etc.). "
+                "Includes exit code detection. For long-running commands, increase the timeout."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "shell_id": {"type": "string", "description": "ID of the open shell session."},
+                    "command": {"type": "string", "description": "Command to execute in the shell."},
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 30).",
+                        "default": 30,
+                    },
+                },
+                "required": ["shell_id", "command"],
+            },
+        ),
+        types.Tool(
+            name="ssh_shell_close",
+            description="Close a persistent interactive shell session.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "shell_id": {"type": "string", "description": "ID of the shell session to close."},
+                },
+                "required": ["shell_id"],
+            },
+        ),
     ]
 
 
@@ -252,10 +325,33 @@ async def _dispatch(name: str, args: dict) -> dict:
     if name == "ssh_disconnect":
         conn_id = args["conn_id"]
         if conn_id in _connections:
+            # Close shells associated with this connection
+            for sid in [s for s, c in _shell_to_conn.items() if c == conn_id]:
+                try:
+                    _shells[sid].close()
+                except Exception:
+                    pass
+                _shells.pop(sid, None)
+                _shell_to_conn.pop(sid, None)
             _connections[conn_id].close()
             del _connections[conn_id]
             return {"status": f"Connection '{conn_id}' closed."}
         return {"error": f"Connection '{conn_id}' not found."}
+
+    if name == "ssh_shell_open":
+        return await loop.run_in_executor(None, _tool_shell_open, args)
+
+    if name == "ssh_shell_exec":
+        return await loop.run_in_executor(None, _tool_shell_exec, args)
+
+    if name == "ssh_shell_close":
+        shell_id = args["shell_id"]
+        if shell_id in _shells:
+            _shells[shell_id].close()
+            del _shells[shell_id]
+            _shell_to_conn.pop(shell_id, None)
+            return {"status": f"Shell '{shell_id}' closed."}
+        return {"error": f"Shell '{shell_id}' not found."}
 
     raise ValueError(f"Unknown tool: {name}")
 
@@ -398,6 +494,122 @@ def _tool_exec_script(args: dict) -> dict:
         except Exception:
             pass
 
+    return result
+
+
+def _tool_shell_open(args: dict) -> dict:
+    """Open a persistent interactive shell with PTY on an SSH connection."""
+    conn_id = args["conn_id"]
+    shell_id = args.get("shell_id", conn_id)
+    term = args.get("term", "xterm")
+    cols = args.get("cols", 200)
+    rows = args.get("rows", 50)
+
+    client = _get_connection(conn_id)
+
+    # Close existing shell with same ID
+    if shell_id in _shells:
+        try:
+            _shells[shell_id].close()
+        except Exception:
+            pass
+
+    channel = client.invoke_shell(term=term, width=cols, height=rows)
+    channel.settimeout(5)
+    _shells[shell_id] = channel
+    _shell_to_conn[shell_id] = conn_id
+
+    # Drain the initial login banner/prompt
+    time.sleep(0.5)
+    _drain_channel(channel)
+
+    # Disable echo and set a minimal prompt to reduce noise (result discarded)
+    _shell_send(channel, "stty -echo 2>/dev/null; export PS1=''; export PS2=''", timeout=3)
+
+    return {"status": "shell_opened", "shell_id": shell_id, "conn_id": conn_id}
+
+
+def _drain_channel(channel: paramiko.Channel) -> str:
+    """Read all available data from channel without blocking."""
+    data = b""
+    while channel.recv_ready():
+        data += channel.recv(65536)
+    return data.decode("utf-8", errors="replace")
+
+
+def _shell_send(channel: paramiko.Channel, command: str, timeout: int = 30) -> dict:
+    """Send a command to the shell and return parsed output, exit code, and timeout flag."""
+    marker = _SHELL_MARKER.format(uuid.uuid4().hex[:8], uuid.uuid4().hex[:8])
+
+    # Send command followed by an echo of the marker and exit code
+    full_cmd = "{}\necho \"{} $?\"\n".format(command, marker)
+    channel.sendall(full_cmd.encode())
+
+    output = b""
+    start = time.monotonic()
+    timed_out = False
+
+    while True:
+        elapsed = time.monotonic() - start
+        if elapsed > timeout:
+            timed_out = True
+            break
+
+        if channel.recv_ready():
+            chunk = channel.recv(65536)
+            if not chunk:
+                break
+            output += chunk
+            if marker.encode() in output:
+                break
+        else:
+            time.sleep(0.05)
+
+    decoded = output.decode("utf-8", errors="replace")
+
+    # Parse: split on the marker line to separate output from exit code
+    exit_code = None
+    output_lines = []
+    for line in decoded.split("\n"):
+        if marker in line:
+            # Exit code follows the marker on the same line
+            remainder = line.split(marker)[-1].strip()
+            try:
+                exit_code = int(remainder)
+            except ValueError:
+                pass
+            break
+        output_lines.append(line)
+
+    return {
+        "output": "\n".join(output_lines).strip(),
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+    }
+
+
+def _tool_shell_exec(args: dict) -> dict:
+    """Send a command to a persistent interactive shell and return output."""
+    shell_id = args["shell_id"]
+    command = args["command"]
+    timeout = args.get("timeout", 30)
+
+    if shell_id not in _shells:
+        raise ValueError("Shell '{}' not found. Call ssh_shell_open first.".format(shell_id))
+
+    channel = _shells[shell_id]
+    if channel.closed:
+        del _shells[shell_id]
+        _shell_to_conn.pop(shell_id, None)
+        raise ValueError("Shell '{}' is closed. Open a new one.".format(shell_id))
+
+    parsed = _shell_send(channel, command, timeout)
+
+    result = {"output": parsed["output"], "shell_id": shell_id}
+    if parsed["exit_code"] is not None:
+        result["exit_code"] = parsed["exit_code"]
+    if parsed["timed_out"]:
+        result["timeout"] = True
     return result
 
 
