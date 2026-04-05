@@ -405,7 +405,7 @@ def _load_host_keys(client: paramiko.SSHClient, known_hosts_path: str | None) ->
 def _tool_connect(args: dict) -> dict:
     """Open an SSH connection and store it in the connection pool."""
     conn_id = args["conn_id"]
-    host = args["host"]
+    host = args["host"].lower()
     port = args.get("port", 22)
     username = args["username"]
     password = args.get("password")
