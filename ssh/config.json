@@ -1,0 +1,14 @@
+{
+  "default_port": 22,
+  "default_exec_timeout": 30,
+  "default_script_timeout": 60,
+  "default_shell_timeout": 30,
+  "default_term": "xterm",
+  "default_cols": 200,
+  "default_rows": 50,
+  "known_hosts_paths": [
+    "~/.ssh/known_hosts",
+    "/etc/ssh/ssh_known_hosts"
+  ],
+  "log_level": "DEBUG"
+}

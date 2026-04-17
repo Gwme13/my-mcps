@@ -6,7 +6,7 @@ A collection of [Model Context Protocol (MCP)](https://modelcontextprotocol.io) 
 
 ### [`ssh/`](ssh/) — SSH MCP Server
 
-Gives Claude the ability to open persistent SSH connections to remote servers and execute commands, scripts, and file transfers, all within a conversation.
+Gives Claude the ability to open persistent SSH connections to remote servers and execute commands, scripts, and file transfers, all within a conversation. Built on `FastMCP` with a modular layout (`server.py` thin controller, `services/ssh_service.py` for paramiko logic, `config.py` + `config.json` for defaults, `logger_setup.py` for rotating file logs).
 
 #### Tools
 
@@ -39,7 +39,10 @@ ssh-keyscan -H <host> >> ~/.ssh/known_hosts
 
 ```bash
 cd ssh
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+claude mcp add -s user ssh-mcp "$(pwd)/.venv/bin/python" "$(pwd)/server.py"
 ```
 
 #### Claude Desktop configuration (`claude_desktop_config.json`)
@@ -48,12 +51,28 @@ pip install -r requirements.txt
 {
   "mcpServers": {
     "ssh": {
-      "command": "python3",
+      "command": "/absolute/path/to/ssh/.venv/bin/python",
       "args": ["/absolute/path/to/ssh/server.py"]
     }
   }
 }
 ```
+
+#### Configuration
+
+Defaults live in [`ssh/config.json`](ssh/config.json); environment variables take precedence:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SSH_MCP_DEFAULT_PORT` | `22` | SSH port when `port` is omitted. |
+| `SSH_MCP_EXEC_TIMEOUT` | `30` | Timeout (s) for `ssh_exec`. |
+| `SSH_MCP_SCRIPT_TIMEOUT` | `60` | Timeout (s) for `ssh_exec_script`. |
+| `SSH_MCP_SHELL_TIMEOUT` | `30` | Timeout (s) for `ssh_shell_exec`. |
+| `SSH_MCP_TERM` | `xterm` | Terminal type for `ssh_shell_open`. |
+| `SSH_MCP_COLS` / `SSH_MCP_ROWS` | `200` / `50` | PTY size. |
+| `SSH_MCP_LOG_LEVEL` | `DEBUG` | Log verbosity. |
+
+Logs are written to `ssh/logs/mcp.log` (rotating, 5 MB × 3 backups) with latency per tool call.
 
 #### Example usage
 
