@@ -1,0 +1,31 @@
+{
+  "base_url": "http://localhost:11434",
+  "small_model": "qwen2.5-coder:7b-instruct-q8_0",
+  "large_model": "qwen3-coder:30b-a3b-q8_0",
+  "default_model": "qwen2.5-coder:7b-instruct-q8_0",
+  "default_temperature": 0.1,
+  "default_num_predict": 1024,
+  "request_timeout_seconds": 300,
+  "keep_alive": "2m",
+  "log_level": "DEBUG",
+  "tool_model_map": {
+    "generate": "small",
+    "chat": "small",
+    "docstring": "small",
+    "explain": "small",
+    "review": "small",
+    "embeddings": "small",
+    "benchmark": "small",
+    "refactor": "large",
+    "tests": "large",
+    "fix_bug": "large"
+  },
+  "tool_budgets": {
+    "docstring": 512,
+    "refactor": 1500,
+    "explain": 800,
+    "tests": 2000,
+    "review": 800,
+    "fix_bug": 1500
+  }
+}
